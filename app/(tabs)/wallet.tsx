@@ -59,12 +59,6 @@ export default function WalletScreen() {
         options={{
           title: 'History',
           headerTitleAlign: 'center',
-          headerRight: () => (
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Text style={{ color: '#2563EB', fontWeight: '900', marginRight: 4 }}>EarnByApps</Text>
-              <MaterialIcons name="north-east" size={16} color="#FF7A00" />
-            </View>
-          ),
         }}
       />
       <SafeAreaView style={[styles.safeArea, isDark && { backgroundColor: '#0B0F14' }]}>

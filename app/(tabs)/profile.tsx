@@ -131,7 +131,6 @@ export default function ProfileScreen() {
         {/* Header / Logo */}
         <View style={styles.logoRow}>
           <Text style={styles.logoText}>EarnByApps</Text>
-          <MaterialIcons name="north-east" size={18} color="#FF7A00" style={{ marginTop: 2 }} />
         </View>
         {/* Auth Card */}
         <View style={[styles.card, isDark ? { backgroundColor: '#1E293B', shadowOpacity: 0 } : null]}>
@@ -206,61 +205,6 @@ export default function ProfileScreen() {
                 <Text style={[styles.errorText]}>{profileMsg}</Text>
               )}
 
-              {/* Primary CTA: Save or Edit */}
-              <TouchableOpacity
-                onPress={async () => {
-                  if (!user) return;
-                  if (!isEditing) {
-                    // Switch to edit mode
-                    setIsEditing(true);
-                    return;
-                  }
-                  // Save flow
-                  const full = name.trim();
-                  const ph = phone.trim();
-                  const upi = upiId.trim();
-                  const phoneOk = /^\+?\d{10,15}$/.test(ph.replace(/\s|-/g, ''));
-                  const upiOk = /^[a-zA-Z0-9._-]{2,}@[a-zA-Z.]{2,}$/.test(upi);
-                  if (!full || !ph || !upi) {
-                    setProfileMsg('Please fill all fields');
-                    return;
-                  }
-                  if (!phoneOk) {
-                    setProfileMsg('Enter a valid mobile number');
-                    return;
-                  }
-                  if (!upiOk) {
-                    setProfileMsg('Enter a valid UPI ID (e.g., username@upi)');
-                    return;
-                  }
-                  setProfileMsg('');
-                  setProfileLoading(true);
-                  try {
-                    await upsertProfile({ id: user.id, full_name: full, phone: ph, upi_id: upi });
-                    // Lock fields after save
-                    setIsEditing(false);
-                  } catch (e: any) {
-                    setProfileMsg(e?.message ?? 'Failed to save');
-                  } finally {
-                    setProfileLoading(false);
-                  }
-                }}
-                style={[styles.primaryBtn, { backgroundColor: isDark ? '#4338CA' : '#2563EB', marginTop: 14 }]}
-                disabled={profileLoading}
-              >
-                <Text style={styles.primaryBtnText}>{isEditing ? (profileLoading ? 'Saving…' : 'Save Profile') : 'Edit Profile'}</Text>
-              </TouchableOpacity>
-
-              {/* Logout button (always visible when logged in) */}
-              <TouchableOpacity
-                onPress={async () => {
-                  await signOut();
-                  router.replace('/');
-                }}
-                style={[styles.primaryBtn, { backgroundColor: '#EF4444', marginTop: 14 }]}
-              >
-                <Text style={styles.primaryBtnText}>Logout</Text>
-              </TouchableOpacity>
             </>
           ) : (
             <>
@@ -353,6 +297,66 @@ export default function ProfileScreen() {
             </>
           )}
         </View>
+        {/* Buttons outside the card for logged-in users */}
+        {user && (
+          <>
+            {/* Primary CTA: Save or Edit */}
+            <TouchableOpacity
+              onPress={async () => {
+                if (!user) return;
+                if (!isEditing) {
+                  // Switch to edit mode
+                  setIsEditing(true);
+                  return;
+                }
+                // Save flow
+                const full = name.trim();
+                const ph = phone.trim();
+                const upi = upiId.trim();
+                const phoneOk = /^\+?\d{10,15}$/.test(ph.replace(/\s|-/g, ''));
+                const upiOk = /^[a-zA-Z0-9._-]{2,}@[a-zA-Z.]{2,}$/.test(upi);
+                if (!full || !ph || !upi) {
+                  setProfileMsg('Please fill all fields');
+                  return;
+                }
+                if (!phoneOk) {
+                  setProfileMsg('Enter a valid mobile number');
+                  return;
+                }
+                if (!upiOk) {
+                  setProfileMsg('Enter a valid UPI ID (e.g., username@upi)');
+                  return;
+                }
+                setProfileMsg('');
+                setProfileLoading(true);
+                try {
+                  await upsertProfile({ id: user.id, full_name: full, phone: ph, upi_id: upi });
+                  // Lock fields after save
+                  setIsEditing(false);
+                } catch (e: any) {
+                  setProfileMsg(e?.message ?? 'Failed to save');
+                } finally {
+                  setProfileLoading(false);
+                }
+              }}
+              style={[styles.primaryBtn, { backgroundColor: isDark ? '#4338CA' : '#2563EB' }]}
+              disabled={profileLoading}
+            >
+              <Text style={styles.primaryBtnText}>{isEditing ? (profileLoading ? 'Saving…' : 'Save Profile') : 'Edit Profile'}</Text>
+            </TouchableOpacity>
+
+            {/* Logout button (always visible when logged in) */}
+            <TouchableOpacity
+              onPress={async () => {
+                await signOut();
+                router.replace('/');
+              }}
+              style={[styles.primaryBtn, { backgroundColor: '#EF4444' }]}
+            >
+              <Text style={styles.primaryBtnText}>Logout</Text>
+            </TouchableOpacity>
+          </>
+        )}
 
         {/* Removed extra sub-cards to restore original single-card layout */}
       </ScrollView>

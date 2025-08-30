@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Dimensions, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View, SafeAreaView, Platform, StatusBar, useColorScheme, Linking } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Dimensions, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View, SafeAreaView, Platform, StatusBar, useColorScheme, Linking, RefreshControl } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import Constants from 'expo-constants';
 import { router, type Href } from 'expo-router';
@@ -7,6 +7,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { getSlides, subscribeSlides, type Slide, getOffers, subscribeOffers, type OfferItem } from '../../lib/content';
 import { subscribeTransactionsForUser, type Transaction } from '@/lib/transactions';
 import { getProfile } from '@/lib/profile';
+import { supabase } from '../../lib/supabase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -20,6 +21,8 @@ export default function HomeScreen() {
   const [slides, setSlides] = useState<Slide[]>(getSlides());
   const [isAdmin, setIsAdmin] = useState(false);
   const [paidOfferIds, setPaidOfferIds] = useState<Set<string>>(new Set());
+  const carouselRef = useRef<ScrollView | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     // Subscribe to content store so Admin additions reflect immediately
@@ -76,13 +79,60 @@ export default function HomeScreen() {
   const MIN_VISIBLE = 8;
   const dummyCount = useMemo(() => Math.max(0, MIN_VISIBLE - visibleOffers.length), [visibleOffers.length]);
 
+  // Autoplay carousel every 3 seconds
+  useEffect(() => {
+    if (!slides.length || !carouselRef.current) return;
+    const interval = setInterval(() => {
+      setActiveCarousel((prev) => {
+        const next = (prev + 1) % Math.max(slides.length, 1);
+        const x = next * SCREEN_WIDTH;
+        carouselRef.current?.scrollTo({ x, y: 0, animated: true });
+        return next;
+      });
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [slides.length]);
+
+  // Pull-to-refresh handler: refetch slides and offers now
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const [{ data: slideRows }, { data: offerRows }] = await Promise.all([
+        supabase.from('slides').select('*').order('created_at', { ascending: false }),
+        supabase.from('offers').select('*').order('created_at', { ascending: false }),
+      ]);
+      const nextSlides: Slide[] = ((slideRows as any[]) || []).map((r: any) => ({ id: r.id, image: r.image, link: r.link ?? undefined }));
+      const nextOffers: OfferItem[] = ((offerRows as any[]) || []).map((r: any) => ({
+        id: r.id,
+        title: r.title,
+        amount: r.amount,
+        icon: r.icon ?? undefined,
+        label: r.label ?? undefined,
+        description: r.description ?? undefined,
+        steps: r.steps ?? undefined,
+        storeUrl: r.store_url ?? undefined,
+        active: r.active ?? undefined,
+        requiresProof: r.requires_proof ?? undefined,
+      }));
+      setSlides(nextSlides);
+      setAllOffers(nextOffers);
+    } catch (e) {
+      // No-op: retain previous content on error
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
+
   return (
     <SafeAreaView style={[styles.safeArea, isDark && { backgroundColor: '#0B0F14' }] }>
-      <ScrollView contentContainerStyle={[styles.container, isDark && { backgroundColor: '#0B0F14' }]} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[styles.container, isDark && { backgroundColor: '#0B0F14' }]}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={isDark ? '#9CA3AF' : '#6B7280'} />}
+      >
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.logoText}>EarnByApps</Text>
-        <MaterialIcons name="north-east" size={18} color="#FF7A00" style={styles.arrowIcon} />
         {isAdmin && (
           <TouchableOpacity
             onPress={() => router.push('/admin')}
@@ -98,8 +148,9 @@ export default function HomeScreen() {
 
       {/* (Tabs removed as requested) */}
 
-      {/* Carousel (image-based) */}
+      {/* Carousel (image-based with autoplay) */}
       <ScrollView
+        ref={carouselRef}
         horizontal
         pagingEnabled
         showsHorizontalScrollIndicator={false}

@@ -1,6 +1,6 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
-import { Platform, useColorScheme } from 'react-native';
+import { Platform, TouchableOpacity, useColorScheme } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 // import { useColorScheme } from '@/hooks/useColorScheme';
 
@@ -15,7 +15,23 @@ export default function TabLayout() {
         headerShown: false,
         // Keep screens mounted to avoid flicker and expensive remounts
         lazy: false,
-        unmountOnBlur: false,
+        // Remove transition animations between tabs
+        animation: 'none',
+        // Custom button to suppress ripple/opacity/hover effects
+        tabBarButton: (props) => (
+          <TouchableOpacity
+            onPress={props.onPress ?? undefined}
+            onLongPress={props.onLongPress ?? undefined}
+            accessibilityRole={props.accessibilityRole}
+            accessibilityState={props.accessibilityState}
+            accessibilityLabel={props.accessibilityLabel}
+            testID={props.testID}
+            style={props.style as any}
+            activeOpacity={1}
+          >
+            {props.children}
+          </TouchableOpacity>
+        ),
         tabBarStyle: Platform.select({
           ios: {
             // Use a transparent background on iOS to show the blur effect

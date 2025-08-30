@@ -21,8 +21,8 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-        <Stack>
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack screenOptions={{ animation: 'none' }}>
+          <Stack.Screen name="(tabs)" options={{ headerShown: false, animation: 'none' }} />
           <Stack.Screen name="+not-found" />
         </Stack>
         <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
