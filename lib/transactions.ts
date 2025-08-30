@@ -172,9 +172,10 @@ export function subscribeTransactionsForUser(userId: string, cb: (items: Transac
   (async () => {
     const { data, error } = await supabase
       .from('transactions')
-      .select('*')
+      .select('id,user_id,offer_id,offer_title,offer_icon_url,amount,status,proof_url,notes,reviewed_by,reviewed_at,created_at,updated_at')
       .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .limit(200);
     if (!cancelled) cb((data as any[] | null)?.map(mapRow) ?? []);
     if (error) console.warn('[transactions] load error', error.message);
   })();
@@ -184,9 +185,10 @@ export function subscribeTransactionsForUser(userId: string, cb: (items: Transac
     .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions', filter: `user_id=eq.${userId}` }, async () => {
       const { data } = await supabase
         .from('transactions')
-        .select('*')
+        .select('id,user_id,offer_id,offer_title,offer_icon_url,amount,status,proof_url,notes,reviewed_by,reviewed_at,created_at,updated_at')
         .eq('user_id', userId)
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .limit(200);
       if (!cancelled) cb((data as any[] | null)?.map(mapRow) ?? []);
     })
     .subscribe();
@@ -194,13 +196,45 @@ export function subscribeTransactionsForUser(userId: string, cb: (items: Transac
   return () => { cancelled = true; supabase.removeChannel(channel); };
 }
 
+// Cursor-paginated fetch with filters for admin explore UI
+export type TxnQuery = {
+  status?: TransactionStatus | 'all';
+  from?: string; // ISO inclusive
+  to?: string;   // ISO inclusive
+  pageSize?: number; // default 50
+  cursor?: string; // created_at cursor; when provided, fetch items with created_at < cursor
+  userId?: string; // optional filter
+};
+
+export async function fetchTransactions(q: TxnQuery) {
+  const pageSize = Math.max(1, Math.min(q.pageSize ?? 50, 100));
+  let query = supabase
+    .from('transactions')
+    .select('id,user_id,offer_id,offer_title,offer_icon_url,amount,status,proof_url,notes,reviewed_by,reviewed_at,created_at,updated_at')
+    .order('created_at', { ascending: false }) as any;
+
+  if (q.status && q.status !== 'all') query = query.eq('status', q.status);
+  if (q.from) query = query.gte('created_at', q.from);
+  if (q.to) query = query.lte('created_at', q.to);
+  if (q.cursor) query = query.lt('created_at', q.cursor);
+  if (q.userId) query = query.eq('user_id', q.userId);
+
+  query = query.limit(pageSize);
+  const { data, error } = await query;
+  if (error) throw error;
+  const items = ((data as any[] | null) ?? []).map(mapRow);
+  const nextCursor = items.length === pageSize ? items[items.length - 1]?.created_at : undefined;
+  return { items, nextCursor } as { items: Transaction[]; nextCursor?: string };
+}
+
 export function subscribeAllTransactions(cb: (items: Transaction[]) => void) {
   let cancelled = false;
   (async () => {
     const { data, error } = await supabase
       .from('transactions')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .select('id,user_id,offer_id,offer_title,offer_icon_url,amount,status,proof_url,notes,reviewed_by,reviewed_at,created_at,updated_at')
+      .order('created_at', { ascending: false })
+      .limit(300);
     if (!cancelled) cb((data as any[] | null)?.map(mapRow) ?? []);
     if (error) console.warn('[transactions] load all error', error.message);
   })();
@@ -210,8 +244,9 @@ export function subscribeAllTransactions(cb: (items: Transaction[]) => void) {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, async () => {
       const { data } = await supabase
         .from('transactions')
-        .select('*')
-        .order('created_at', { ascending: false });
+        .select('id,user_id,offer_id,offer_title,offer_icon_url,amount,status,proof_url,notes,reviewed_by,reviewed_at,created_at,updated_at')
+        .order('created_at', { ascending: false })
+        .limit(300);
       if (!cancelled) cb((data as any[] | null)?.map(mapRow) ?? []);
     })
     .subscribe();

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View, useColorScheme, ScrollView, Switch, Image } from 'react-native';
+import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View, useColorScheme, ScrollView, Switch, Image, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '@/hooks/useAuth';
 import { getProfile } from '@/lib/profile';
@@ -9,6 +9,59 @@ import { subscribeAllTransactions, updateTransactionStatus, type Transaction } f
 import { supabase } from '@/lib/supabase';
 import type { UserProfile } from '@/lib/profile';
 import * as ImagePicker from 'expo-image-picker';
+import { Link } from 'expo-router';
+
+// Simple Error Boundary to prevent Admin crashing due to a sub-tree error
+class TxnErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; msg?: string }>{
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, msg: String(error?.message || error) };
+  }
+  componentDidCatch(error: any, info: any) {
+    console.warn('Transactions UI crashed:', error, info?.componentStack);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={{ padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#FCA5A5', backgroundColor: '#FEF2F2' }}>
+          <Text style={{ color: '#B91C1C', fontWeight: '800' }}>Transactions failed to render.</Text>
+          {!!this.state.msg && (<Text style={{ color: '#7F1D1D', marginTop: 6 }} numberOfLines={3}>{this.state.msg}</Text>)}
+          <Text style={{ color: '#7F1D1D', marginTop: 6 }}>You can try toggling the switch off, or filter to fewer items.</Text>
+        </View>
+      );
+    }
+    return this.props.children as any;
+  }
+}
+
+// Top-level Error Boundary for Admin screen
+class AdminErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; msg?: string }>{
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, msg: String(error?.message || error) };
+  }
+  componentDidCatch(error: any, info: any) {
+    console.warn('Admin UI crashed:', error, info?.componentStack);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={{ padding: 16 }}>
+          <Text style={{ color: '#B91C1C', fontWeight: '900', fontSize: 16 }}>Admin failed to render.</Text>
+          {!!this.state.msg && (<Text style={{ color: '#7F1D1D', marginTop: 6 }} numberOfLines={3}>{this.state.msg}</Text>)}
+          <Text style={{ color: '#6B7280', marginTop: 6 }}>Try going back and reopening Admin, or update to latest build.</Text>
+        </View>
+      );
+    }
+    return this.props.children as any;
+  }
+}
 
 export default function AdminScreen() {
   const colorScheme = useColorScheme();
@@ -50,6 +103,45 @@ export default function AdminScreen() {
   const [editDescription, setEditDescription] = useState('');
   const [editStoreUrl, setEditStoreUrl] = useState('');
 
+  // TEMP: disable Transactions Manager entirely to isolate crashes
+  const DISABLE_TX_MANAGER = true;
+  // TEMP: disable heavy sections (slides/offers) to prevent crashes on mobile
+  const DISABLE_HEAVY_SECTIONS = false;
+
+  // Runtime web detection (avoids TS type mismatch for Platform.OS)
+  const IS_WEB = typeof window !== 'undefined' && typeof document !== 'undefined';
+
+  // On web, render a minimal shell to avoid react-native-web style flattening edge cases
+  if (IS_WEB) {
+    const bg = isDark ? '#0B0F14' : '#FFFFFF';
+    const text = isDark ? '#E5E7EB' : '#111827';
+    const sub = isDark ? '#9CA3AF' : '#6B7280';
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: bg }}>
+        <AdminErrorBoundary>
+          <View style={{ flex: 1, backgroundColor: bg, padding: 16 }}>
+            <Text style={{ fontSize: 22, fontWeight: '900', color: text, textAlign: 'center' }}>Admin</Text>
+            <Text style={{ marginTop: 8, color: sub, textAlign: 'center' }}>Web-safe minimal shell. Use Transactions Explore.</Text>
+            <View style={{ height: 24 }} />
+            <Link href="/admin/transactions" asChild>
+              <TouchableOpacity style={{ backgroundColor: '#2563EB', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 12, alignItems: 'center' }}>
+                <Text style={{ color: '#FFFFFF', fontWeight: '900' }}>Open Transactions Explore</Text>
+              </TouchableOpacity>
+            </Link>
+          </View>
+        </AdminErrorBoundary>
+      </SafeAreaView>
+    );
+  }
+
+  // Section gating to avoid heavy initial render on native
+  const [showTxSection, setShowTxSection] = useState<boolean>(IS_WEB);
+  const [txVisibleCount, setTxVisibleCount] = useState<number>(10);
+  const [showSlidesSection, setShowSlidesSection] = useState<boolean>(IS_WEB);
+  const [showOffersSection, setShowOffersSection] = useState<boolean>(IS_WEB);
+  const [visibleSlidesCount, setVisibleSlidesCount] = useState<number>(10);
+  const [visibleOffersCount, setVisibleOffersCount] = useState<number>(10);
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -66,24 +158,50 @@ export default function AdminScreen() {
   }, [user]);
 
   useEffect(() => {
-    const unsub = subscribeSlides(setSlides);
-    const unsubOffers = subscribeOffers(setOffers);
+    if (!isAdmin) return;
+    let unsubSlides: undefined | (() => void);
+    let unsubOffers: undefined | (() => void);
+    if (showSlidesSection) {
+      unsubSlides = subscribeSlides(setSlides);
+    } else {
+      setSlides(getSlides());
+    }
+    if (showOffersSection) {
+      unsubOffers = subscribeOffers(setOffers);
+    } else {
+      setOffers(getOffers());
+    }
+    return () => { if (unsubSlides) unsubSlides(); if (unsubOffers) unsubOffers(); };
+  }, [isAdmin, showSlidesSection, showOffersSection]);
+
+  // Subscribe to transactions ONLY when the section is enabled to reduce memory/CPU on mobile
+  useEffect(() => {
+    if (DISABLE_TX_MANAGER) { setTxs([]); return; }
+    if (!showTxSection) { setTxs([]); return; }
     const unsubTx = subscribeAllTransactions(setTxs);
-    return () => { unsub(); unsubOffers(); unsubTx(); };
-  }, []);
+    return () => { unsubTx(); };
+  }, [showTxSection]);
 
   // Load profiles for all user_ids present in transactions
   useEffect(() => {
     (async () => {
-      const ids = Array.from(new Set(txs.map(t => t.user_id))).filter(Boolean);
-      if (ids.length === 0) { setProfilesMap({}); return; }
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('id, full_name, phone, upi_id, is_admin, updated_at')
-        .in('id', ids);
-      if (error) { console.warn('[admin] load profiles error', error.message); return; }
+      if (DISABLE_TX_MANAGER) { setProfilesMap({}); return; }
+      const allIds = Array.from(new Set(txs.map(t => t.user_id))).filter(Boolean);
+      if (allIds.length === 0) { setProfilesMap({}); return; }
+      const MAX_IDS = 200; // cap to avoid huge payloads
+      const ids = allIds.slice(0, MAX_IDS);
+      const chunkSize = 50;
+      const chunks: string[][] = [];
+      for (let i = 0; i < ids.length; i += chunkSize) chunks.push(ids.slice(i, i + chunkSize));
       const map: Record<string, UserProfile> = {};
-      (data as UserProfile[]).forEach(p => { map[p.id] = p; });
+      for (const ch of chunks) {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('id, full_name, phone, upi_id, is_admin, updated_at')
+          .in('id', ch);
+        if (error) { console.warn('[admin] load profiles error', error.message); continue; }
+        (data as UserProfile[]).forEach(p => { map[p.id] = p; });
+      }
       setProfilesMap(map);
     })();
   }, [txs]);
@@ -217,6 +335,19 @@ export default function AdminScreen() {
     setSteps((prev: string[]) => prev.filter((_, i) => i !== index));
   };
 
+  // Helpers: safe date and image guards
+  const safeFormatDate = (iso?: string | null) => {
+    if (!iso) return '—';
+    const ms = Date.parse(iso);
+    if (Number.isNaN(ms)) return '—';
+    try { return new Date(ms).toLocaleString(); } catch { return '—'; }
+  };
+  // Allow http(s), file://, content://, asset:/ and data:image/ URIs for previews
+  const isDisplayableImageUri = (u?: string | null) => {
+    if (!u) return false;
+    return /^(https?:\/\/|file:\/{2,}|content:\/{2,}|asset:\/|data:image\/)/i.test(u);
+  };
+
   if (!user) {
     return (
       <SafeAreaView style={[styles.safeArea, isDark && { backgroundColor: '#0B0F14' }]}>
@@ -239,19 +370,84 @@ export default function AdminScreen() {
     );
   }
 
+  if (DISABLE_HEAVY_SECTIONS) {
+    const bg = isDark ? '#0B0F14' : '#FFFFFF';
+    const text = isDark ? '#E5E7EB' : '#111827';
+    const sub = isDark ? '#9CA3AF' : '#6B7280';
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: bg }}> 
+        <AdminErrorBoundary>
+          <View style={{ flex: 1, backgroundColor: bg, padding: 16 }}> 
+            <Text style={{ fontSize: 22, fontWeight: '900', color: text }}>Admin</Text>
+            <Text style={{ marginTop: 8, color: sub }}>
+              Heavy sections are temporarily disabled on mobile to improve stability.
+            </Text>
+            <View style={{ height: 24 }} />
+            <Text style={{ fontSize: 18, fontWeight: '900', color: text }}>Transactions</Text>
+            <View style={{ marginTop: 12 }}>
+              <Link href="/admin/transactions" asChild>
+                <TouchableOpacity style={{ backgroundColor: '#2563EB', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 12, alignItems: 'center' }}> 
+                  <Text style={{ color: '#FFFFFF', fontWeight: '900' }}>Open Transactions Explore</Text>
+                </TouchableOpacity>
+              </Link>
+            </View>
+          </View>
+        </AdminErrorBoundary>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={[styles.safeArea, isDark && { backgroundColor: '#0B0F14' }]}> 
+      <AdminErrorBoundary>
       <ScrollView contentContainerStyle={[styles.container, isDark && { backgroundColor: '#0B0F14' }]}> 
+        {/* Section Toggles */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Text style={[styles.title, isDark && { color: '#E5E7EB' }]}>Admin</Text>
+        </View>
+        <View style={{ marginTop: 12 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={[styles.label, isDark && { color: '#9CA3AF' }]}>Enable Slides</Text>
+            <Switch value={showSlidesSection} onValueChange={setShowSlidesSection} />
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={[styles.label, isDark && { color: '#9CA3AF' }]}>Enable Offers</Text>
+            <Switch value={showOffersSection} onValueChange={setShowOffersSection} />
+          </View>
+          <View>
+            <Text style={[styles.label, isDark && { color: '#9CA3AF' }]}>Transactions</Text>
+            <View style={{ marginTop: 8 }}>
+              <Link href="/admin/transactions" asChild>
+                <TouchableOpacity style={[styles.btn, { backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 12 }]}> 
+                  <Text style={styles.btnText}>Open Transactions Explore</Text>
+                </TouchableOpacity>
+              </Link>
+            </View>
+          </View>
+        </View>
+
+        {/* Slides Manager */}
+        {showSlidesSection && (
+        <View>
+        <View style={{ height: 24 }} />
         <Text style={[styles.title, isDark && { color: '#E5E7EB' }]}>Carousel Manager</Text>
 
         {/* Add form */}
-        <View style={{ gap: 10, marginTop: 12 }}>
+        <View style={{ marginTop: 12 }}>
           <Text style={[styles.label, isDark && { color: '#9CA3AF' }]}>Pick Image</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-            <TouchableOpacity onPress={() => pickSlideImage(false)} style={[styles.btn, { backgroundColor: '#4F46E5', paddingHorizontal: 12, paddingVertical: 10 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <TouchableOpacity onPress={() => pickSlideImage(false)} style={[styles.btn, { backgroundColor: '#4F46E5', paddingHorizontal: 12, paddingVertical: 10, marginRight: 12 }]}>
               <Text style={styles.btnText}>Pick</Text>
             </TouchableOpacity>
-            {!!image && <Image source={{ uri: image }} style={{ width: 80, height: 45, borderRadius: 8 }} />}
+            {!!image && isDisplayableImageUri(image) && (
+              <Image
+                source={{ uri: image }}
+                style={{ width: 80, height: 45, borderRadius: 8 }}
+                onError={() => {
+                  try { setImage(''); } catch {}
+                }}
+              />
+            )}
           </View>
 
           <Text style={[styles.label, isDark && { color: '#9CA3AF' }]}>Optional Link</Text>
@@ -274,14 +470,22 @@ export default function AdminScreen() {
         </View>
 
         {/* List slides */}
-        <View style={{ marginTop: 20, gap: 10 }}>
+        <View style={{ marginTop: 20 }}>
           <Text style={[styles.subTitle, isDark && { color: '#E5E7EB' }]}>Existing Slides</Text>
-          {slides.map((s) => (
+          {slides.slice(0, visibleSlidesCount).map((s) => (
             <View key={s.id} style={[styles.slideRow, isDark ? styles.rowDark : styles.rowLight]}>
               {editingSlideId === s.id ? (
-                <View style={{ flex: 1, gap: 8 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                    {!!editSlideImage && <Image source={{ uri: editSlideImage }} style={{ width: 80, height: 45, borderRadius: 8 }} />}
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    {!!editSlideImage && isDisplayableImageUri(editSlideImage) && (
+                      <Image
+                        source={{ uri: editSlideImage }}
+                        style={{ width: 80, height: 45, borderRadius: 8, marginRight: 10 }}
+                        onError={() => {
+                          try { setEditSlideImage(''); } catch {}
+                        }}
+                      />
+                    )}
                     <TouchableOpacity onPress={() => pickSlideImage(true)} style={[styles.btn, { backgroundColor: '#4F46E5', paddingHorizontal: 10, paddingVertical: 8 }]}>
                       <Text style={styles.btnText}>Replace Image</Text>
                     </TouchableOpacity>
@@ -291,7 +495,7 @@ export default function AdminScreen() {
                     onChangeText={setEditSlideLink}
                     placeholder="https://... or /offer/xyz"
                     autoCapitalize="none"
-                    style={[styles.input, isDark ? styles.inputDark : styles.inputLight]}
+                    style={[styles.input, isDark ? styles.inputDark : styles.inputLight, { marginTop: 8 }]}
                     placeholderTextColor={isDark ? '#9CA3AF' : '#9AA0A6'}
                   />
                 </View>
@@ -303,13 +507,13 @@ export default function AdminScreen() {
                   )}
                 </View>
               )}
-              <View style={{ gap: 8 }}>
+              <View>
                 {editingSlideId === s.id ? (
                   <>
                     <TouchableOpacity onPress={saveEditSlide} style={[styles.btn, { backgroundColor: '#10B981', paddingHorizontal: 12, paddingVertical: 8 }]}>
                       <Text style={styles.btnText}>Save</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={cancelEditSlide} style={[styles.btn, { backgroundColor: '#6B7280', paddingHorizontal: 12, paddingVertical: 8 }]}>
+                    <TouchableOpacity onPress={cancelEditSlide} style={[styles.btn, { backgroundColor: '#6B7280', paddingHorizontal: 12, paddingVertical: 8, marginTop: 8 }]}>
                       <Text style={styles.btnText}>Cancel</Text>
                     </TouchableOpacity>
                   </>
@@ -318,7 +522,7 @@ export default function AdminScreen() {
                     <TouchableOpacity onPress={() => beginEditSlide(s)} style={[styles.btn, { backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 8 }]}>
                       <Text style={styles.btnText}>Edit</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => onDelete(s.id)} style={[styles.deleteBtn]}> 
+                    <TouchableOpacity onPress={() => onDelete(s.id)} style={[styles.deleteBtn, { marginTop: 8 }]}> 
                       <Text style={{ color: '#fff', fontWeight: '800' }}>Delete</Text>
                     </TouchableOpacity>
                   </>
@@ -326,14 +530,23 @@ export default function AdminScreen() {
               </View>
             </View>
           ))}
+          {slides.length > visibleSlidesCount && (
+            <TouchableOpacity onPress={() => setVisibleSlidesCount(c => c + 10)} style={[styles.btn, { backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 10 }]}> 
+              <Text style={styles.btnText}>Show more</Text>
+            </TouchableOpacity>
+          )}
         </View>
+        </View>
+        )}
 
         {/* Offers Manager */}
+        {showOffersSection && (
+        <View>
         <View style={{ height: 24 }} />
         <Text style={[styles.title, isDark && { color: '#E5E7EB' }]}>Offers Manager</Text>
 
         {/* Add Offer form */}
-        <View style={{ gap: 10, marginTop: 12 }}>
+        <View style={{ marginTop: 12 }}>
           <Text style={[styles.label, isDark && { color: '#9CA3AF' }]}>Title</Text>
           <TextInput
             value={title}
@@ -360,10 +573,16 @@ export default function AdminScreen() {
               <Text style={styles.btnText}>Pick</Text>
             </TouchableOpacity>
           </View>
-          {!!icon && (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <Image source={{ uri: icon }} style={{ width: 48, height: 48, borderRadius: 8 }} />
-              <Text numberOfLines={1} style={[styles.slideLink, isDark && { color: '#9CA3AF' }]}>{icon}</Text>
+          {!!icon && isDisplayableImageUri(icon) && (
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Image
+                source={{ uri: icon }}
+                style={{ width: 48, height: 48, borderRadius: 8 }}
+                onError={() => {
+                  try { setIcon(''); } catch {}
+                }}
+              />
+              <Text numberOfLines={1} style={[styles.slideLink, isDark && { color: '#9CA3AF' }, { marginLeft: 12 }]}>{icon}</Text>
             </View>
           )}
 
@@ -389,7 +608,7 @@ export default function AdminScreen() {
 
           {/* Steps editor */}
           <Text style={[styles.label, isDark && { color: '#9CA3AF' }]}>Steps to Complete</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <TextInput
               value={newStep}
               onChangeText={setNewStep}
@@ -397,7 +616,7 @@ export default function AdminScreen() {
               style={[styles.input, { flex: 1 }, isDark ? styles.inputDark : styles.inputLight]}
               placeholderTextColor={isDark ? '#9CA3AF' : '#9AA0A6'}
             />
-            <TouchableOpacity onPress={addStep} style={[styles.btn, { backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 12 }]}>
+            <TouchableOpacity onPress={addStep} style={[styles.btn, { backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 12, marginLeft: 8 }]}>
               <Text style={styles.btnText}>Add</Text>
             </TouchableOpacity>
           </View>
@@ -425,23 +644,31 @@ export default function AdminScreen() {
         </View>
 
         {/* List offers */}
-        <View style={{ marginTop: 20, gap: 10 }}>
+        <View style={{ marginTop: 20 }}>
           <Text style={[styles.subTitle, isDark && { color: '#E5E7EB' }]}>Existing Offers</Text>
-          {offers.map((o) => (
+          {offers.slice(0, visibleOffersCount).map((o) => (
             <View key={o.id} style={[styles.slideRow, isDark ? styles.rowDark : styles.rowLight]}>
               {editingOfferId === o.id ? (
-                <View style={{ flex: 1, gap: 8 }}>
+                <View style={{ flex: 1 }}>
                   <TextInput value={editTitle} onChangeText={setEditTitle} placeholder="Title" style={[styles.input, isDark ? styles.inputDark : styles.inputLight]} placeholderTextColor={isDark ? '#9CA3AF' : '#9AA0A6'} />
-                  <TextInput value={editAmount} onChangeText={setEditAmount} keyboardType="numeric" placeholder="Amount" style={[styles.input, isDark ? styles.inputDark : styles.inputLight]} placeholderTextColor={isDark ? '#9CA3AF' : '#9AA0A6'} />
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <TextInput value={editAmount} onChangeText={setEditAmount} keyboardType="numeric" placeholder="Amount" style={[styles.input, isDark ? styles.inputDark : styles.inputLight, { marginTop: 8 }]} placeholderTextColor={isDark ? '#9CA3AF' : '#9AA0A6'} />
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
                     <Text style={[styles.label, isDark && { color: '#9CA3AF' }]}>Icon</Text>
                     <TouchableOpacity onPress={pickEditIconImage} style={[styles.btn, { backgroundColor: '#4F46E5', paddingHorizontal: 12, paddingVertical: 8 }]}>
                       <Text style={styles.btnText}>Pick</Text>
                     </TouchableOpacity>
                   </View>
-                  {!!editIcon && <Image source={{ uri: editIcon }} style={{ width: 40, height: 40, borderRadius: 8 }} />}
-                  <TextInput value={editDescription} onChangeText={setEditDescription} placeholder="Description" multiline style={[styles.input, { minHeight: 72 }, isDark ? styles.inputDark : styles.inputLight]} placeholderTextColor={isDark ? '#9CA3AF' : '#9AA0A6'} />
-                  <TextInput value={editStoreUrl} onChangeText={setEditStoreUrl} placeholder="Store URL" autoCapitalize="none" style={[styles.input, isDark ? styles.inputDark : styles.inputLight]} placeholderTextColor={isDark ? '#9CA3AF' : '#9AA0A6'} />
+                  {!!editIcon && isDisplayableImageUri(editIcon) && (
+                    <Image
+                      source={{ uri: editIcon }}
+                      style={{ width: 40, height: 40, borderRadius: 8, marginTop: 8 }}
+                      onError={() => {
+                        try { setEditIcon(''); } catch {}
+                      }}
+                    />
+                  )}
+                  <TextInput value={editDescription} onChangeText={setEditDescription} placeholder="Description" multiline style={[styles.input, { minHeight: 72 }, isDark ? styles.inputDark : styles.inputLight, { marginTop: 8 }]} placeholderTextColor={isDark ? '#9CA3AF' : '#9AA0A6'} />
+                  <TextInput value={editStoreUrl} onChangeText={setEditStoreUrl} placeholder="Store URL" autoCapitalize="none" style={[styles.input, isDark ? styles.inputDark : styles.inputLight, { marginTop: 8 }]} placeholderTextColor={isDark ? '#9CA3AF' : '#9AA0A6'} />
                 </View>
               ) : (
                 <View style={{ flex: 1 }}>
@@ -449,10 +676,10 @@ export default function AdminScreen() {
                   <Text style={[styles.slideLink, isDark && { color: '#9CA3AF' }]}>₹{o.amount} • {o.active !== false ? 'Active' : 'Inactive'}</Text>
                 </View>
               )}
-              <View style={{ alignItems: 'flex-end', gap: 8 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <View style={{ alignItems: 'flex-end' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <Text style={[styles.label, isDark && { color: '#9CA3AF' }]}>Active</Text>
-                  <Switch value={(editingOfferId === o.id ? undefined : o.active) !== false} onValueChange={(v) => updateOffer(o.id, { active: v })} />
+                  <Switch value={(editingOfferId === o.id ? undefined : o.active) !== false} onValueChange={(v) => updateOffer(o.id, { active: v })} style={{ marginLeft: 8 }} />
                 </View>
                 {editingOfferId === o.id ? (
                   <>
@@ -472,7 +699,7 @@ export default function AdminScreen() {
                     >
                       <Text style={styles.btnText}>Save</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => { setEditingOfferId(null); setEditTitle(''); setEditAmount(''); setEditIcon(''); setEditDescription(''); setEditStoreUrl(''); }} style={[styles.btn, { backgroundColor: '#6B7280', paddingHorizontal: 12, paddingVertical: 8 }]}>
+                    <TouchableOpacity onPress={() => { setEditingOfferId(null); setEditTitle(''); setEditAmount(''); setEditIcon(''); setEditDescription(''); setEditStoreUrl(''); }} style={[styles.btn, { backgroundColor: '#6B7280', paddingHorizontal: 12, paddingVertical: 8, marginTop: 8 }]}>
                       <Text style={styles.btnText}>Cancel</Text>
                     </TouchableOpacity>
                   </>
@@ -481,7 +708,7 @@ export default function AdminScreen() {
                     <TouchableOpacity onPress={() => { setEditingOfferId(o.id); setEditTitle(o.title); setEditAmount(String(o.amount)); setEditIcon(o.icon || ''); setEditDescription(o.description || ''); setEditStoreUrl(o.storeUrl || ''); }} style={[styles.btn, { backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 8 }]}>
                       <Text style={styles.btnText}>Edit</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => onDeleteOffer(o.id)} style={[styles.deleteBtn]}> 
+                    <TouchableOpacity onPress={() => onDeleteOffer(o.id)} style={[styles.deleteBtn, { marginTop: 8 }]}> 
                       <Text style={{ color: '#fff', fontWeight: '800' }}>Delete</Text>
                     </TouchableOpacity>
                   </>
@@ -489,75 +716,127 @@ export default function AdminScreen() {
               </View>
             </View>
           ))}
+          {offers.length > visibleOffersCount && (
+            <TouchableOpacity onPress={() => setVisibleOffersCount(c => c + 10)} style={[styles.btn, { backgroundColor: '#2563EB', paddingHorizontal: 12, paddingVertical: 10 }]}> 
+              <Text style={styles.btnText}>Show more</Text>
+            </TouchableOpacity>
+          )}
         </View>
+        </View>
+        )}
 
-        {/* Transactions Manager */}
-        <View style={{ height: 24 }} />
-        <Text style={[styles.title, isDark && { color: '#E5E7EB' }]}>Transactions Manager</Text>
-        <View style={{ marginTop: 12, gap: 10 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <Text style={[styles.label, isDark && { color: '#9CA3AF' }]}>Filter</Text>
-            {(['all','pending','paid','rejected'] as const).map((f) => (
-              <TouchableOpacity key={f} onPress={() => setTxFilter(f)} style={[styles.chip, txFilter === f ? styles.chipActive : (isDark ? styles.chipDark : styles.chipLight)]}>
-                <Text style={[styles.chipText, txFilter === f && { color: '#fff' }]}>{f}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          {/* Group by user */}
-          {Object.entries(
-            txs.reduce<Record<string, Transaction[]>>((acc, t) => {
-              if (txFilter !== 'all' && t.status !== txFilter) return acc;
-              (acc[t.user_id] ||= []).push(t);
-              return acc;
-            }, {})
-          ).map(([uid, list]) => {
-            const prof = profilesMap[uid];
-            const header = `${prof?.full_name || 'Unknown User'}${prof?.phone ? ' • ' + prof.phone : ''}${prof?.upi_id ? ' • ' + prof.upi_id : ''}`;
-            const sorted = [...list].sort((a,b) => (a.created_at < b.created_at ? 1 : -1));
-            return (
-              <View key={uid} style={{ gap: 8 }}>
-                <View style={[styles.userHeader, isDark ? styles.rowDark : styles.rowLight]}>
-                  <View style={{ flex: 1 }}>
-                    <Text numberOfLines={1} style={[styles.userTitle, isDark && { color: '#E5E7EB' }]}>{header}</Text>
-                    <Text style={[styles.slideLink, isDark && { color: '#9CA3AF' }]}>{uid}</Text>
-                  </View>
-                </View>
-                {sorted.map((t) => (
-                  <View key={t.id} style={[styles.slideRow, isDark ? styles.rowDark : styles.rowLight]}> 
-                    <View style={{ flex: 1 }}>
-                      <Text numberOfLines={1} style={[styles.slideText, isDark && { color: '#E5E7EB' }]}>
-                        {t.offer_title ?? 'Task'} • ₹{t.amount ?? 0} • {t.status}
-                      </Text>
-                      <Text style={[styles.slideLink, isDark && { color: '#9CA3AF' }]}>
-                        {new Date(t.created_at).toLocaleString()}
-                      </Text>
-                      <TextInput
-                        value={noteDrafts[t.id] ?? t.notes ?? ''}
-                        onChangeText={(v) => setNoteDrafts((d) => ({ ...d, [t.id]: v }))}
-                        placeholder="Admin notes"
-                        style={[styles.input, { marginTop: 8 }, isDark ? styles.inputDark : styles.inputLight]}
-                        placeholderTextColor={isDark ? '#9CA3AF' : '#9AA0A6'}
-                      />
-                    </View>
-                    <View style={{ gap: 6, alignItems: 'flex-end' }}>
-                      <TouchableOpacity onPress={() => updateTransactionStatus(t.id, 'pending', { notes: noteDrafts[t.id] ?? t.notes ?? null, reviewed_by: user?.id ?? null })} style={[styles.btn, { backgroundColor: '#6B7280', paddingHorizontal: 10, paddingVertical: 8 }]}>
-                        <Text style={styles.btnText}>Pending</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity onPress={() => updateTransactionStatus(t.id, 'rejected', { notes: noteDrafts[t.id] ?? t.notes ?? null, reviewed_by: user?.id ?? null })} style={[styles.btn, { backgroundColor: '#EF4444', paddingHorizontal: 10, paddingVertical: 8 }]}>
-                        <Text style={styles.btnText}>Reject</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity onPress={() => updateTransactionStatus(t.id, 'paid', { notes: noteDrafts[t.id] ?? t.notes ?? null, reviewed_by: user?.id ?? null })} style={[styles.btn, { backgroundColor: '#10B981', paddingHorizontal: 10, paddingVertical: 8 }]}>
-                        <Text style={styles.btnText}>Mark Paid</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
+        {/* Transactions Manager temporarily disabled */}
+        {!DISABLE_TX_MANAGER && (
+          <View>
+            <View style={{ height: 24 }} />
+            <Text style={[styles.title, isDark && { color: '#E5E7EB' }]}>Transactions Manager</Text>
+            <View style={{ marginTop: 12 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Text style={[styles.label, isDark && { color: '#9CA3AF' }]}>Render Transactions</Text>
+                <Switch value={showTxSection} onValueChange={setShowTxSection} />
+              </View>
+              {!showTxSection && (
+                <Text style={[styles.slideLink, isDark && { color: '#9CA3AF' }]}>Toggle on to render transactions (disabled by default on device to prevent crashes).</Text>
+              )}
+              {showTxSection && (
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={[styles.label, isDark && { color: '#9CA3AF' }]}>Filter</Text>
+                {(['all','pending','paid','rejected'] as const).map((f, i) => (
+                  <TouchableOpacity key={f} onPress={() => setTxFilter(f)} style={[styles.chip, { marginLeft: i === 0 ? 8 : 8 }, txFilter === f ? styles.chipActive : (isDark ? styles.chipDark : styles.chipLight)]}>
+                    <Text style={[styles.chipText, txFilter === f && { color: '#fff' }]}>{f}</Text>
+                  </TouchableOpacity>
                 ))}
               </View>
-            );
-          })}
-        </View>
+              )}
+
+              {showTxSection && (<TxnErrorBoundary>{(() => {
+                // Build grouped, sorted sections
+                const sections = Object.entries(
+                  txs.reduce<Record<string, Transaction[]>>((acc, t) => {
+                    if (txFilter !== 'all' && t.status !== txFilter) return acc;
+                    (acc[t.user_id] ||= []).push(t);
+                    return acc;
+                  }, {})
+                ).map(([uid, list]) => {
+                  const prof = profilesMap[uid];
+                  const header = `${prof?.full_name || 'Unknown User'}${prof?.phone ? ' • ' + prof.phone : ''}${prof?.upi_id ? ' • ' + prof.upi_id : ''}`;
+                  const data = [...list].sort((a,b) => (a.created_at < b.created_at ? 1 : -1));
+                  return { title: header, uid, data };
+                });
+
+                let rendered = 0;
+                const total = sections.reduce((sum, s) => sum + s.data.length, 0);
+                const nodes: React.ReactNode[] = [];
+                for (const s of sections) {
+                  if (rendered >= txVisibleCount) break;
+                  const remaining = txVisibleCount - rendered;
+                  // limit per user to avoid huge single-user lists
+                  const perUserLimit = Math.min(remaining, 10);
+                  const slice = s.data.slice(0, Math.max(0, Math.min(s.data.length, perUserLimit)));
+                  if (slice.length === 0) continue;
+                  nodes.push(
+                    <View key={`hdr-${s.uid}`} style={[styles.userHeader, isDark ? styles.rowDark : styles.rowLight]}>
+                      <View style={{ flex: 1 }}>
+                        <Text numberOfLines={1} style={[styles.userTitle, isDark && { color: '#E5E7EB' }]}>{s.title}</Text>
+                        <Text style={[styles.slideLink, isDark && { color: '#9CA3AF' }]}>{s.uid}</Text>
+                      </View>
+                    </View>
+                  );
+                  for (const t of slice) {
+                    nodes.push(
+                      <View key={t.id} style={[styles.slideRow, isDark ? styles.rowDark : styles.rowLight]}> 
+                        <View style={{ flex: 1 }}>
+                          <Text numberOfLines={1} style={[styles.slideText, isDark && { color: '#E5E7EB' }]}> 
+                            {t.offer_title ?? 'Task'} • ₹{typeof t.amount === 'number' ? t.amount : Number(t.amount) || 0} • {t.status}
+                          </Text>
+                          <Text style={[styles.slideLink, isDark && { color: '#9CA3AF' }]}> 
+                            {safeFormatDate(t.created_at)}
+                          </Text>
+                          <TextInput
+                            value={noteDrafts[t.id] ?? t.notes ?? ''}
+                            onChangeText={(v) => setNoteDrafts((d) => ({ ...d, [t.id]: v }))}
+                            placeholder="Admin notes"
+                            style={[styles.input, { marginTop: 8 }, isDark ? styles.inputDark : styles.inputLight]}
+                            placeholderTextColor={isDark ? '#9CA3AF' : '#9AA0A6'}
+                          />
+                        </View>
+                        <View style={{ alignItems: 'flex-end' }}>
+                          <TouchableOpacity onPress={() => updateTransactionStatus(t.id, 'pending', { notes: noteDrafts[t.id] ?? t.notes ?? null, reviewed_by: user?.id ?? null })} style={[styles.btn, { backgroundColor: '#6B7280', paddingHorizontal: 10, paddingVertical: 8 }]}> 
+                            <Text style={styles.btnText}>Pending</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={() => updateTransactionStatus(t.id, 'rejected', { notes: noteDrafts[t.id] ?? t.notes ?? null, reviewed_by: user?.id ?? null })} style={[styles.btn, { backgroundColor: '#EF4444', paddingHorizontal: 10, paddingVertical: 8, marginTop: 6 }]}> 
+                            <Text style={styles.btnText}>Reject</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={() => updateTransactionStatus(t.id, 'paid', { notes: noteDrafts[t.id] ?? t.notes ?? null, reviewed_by: user?.id ?? null })} style={[styles.btn, { backgroundColor: '#10B981', paddingHorizontal: 10, paddingVertical: 8, marginTop: 6 }]}> 
+                            <Text style={styles.btnText}>Mark Paid</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    );
+                    rendered++;
+                    if (rendered >= txVisibleCount) break;
+                  }
+                }
+
+                nodes.push(
+                  <View key="tx-footer" style={{ marginTop: 8, alignItems: 'center' }}>
+                    {rendered < total ? (
+                      <TouchableOpacity onPress={() => setTxVisibleCount((n) => n + 10)} style={[styles.btn, { backgroundColor: '#2563EB', paddingHorizontal: 16, paddingVertical: 10 }]}> 
+                        <Text style={styles.btnText}>Load more ({total - rendered} more)</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <Text style={[styles.slideLink, isDark && { color: '#9CA3AF' }]}>All transactions loaded</Text>
+                    )}
+                  </View>
+                );
+
+                return <View>{nodes}</View>;
+              })()}</TxnErrorBoundary>)}
+            </View>
+          </View>
+        )}
       </ScrollView>
+      </AdminErrorBoundary>
     </SafeAreaView>
   );
 }
@@ -596,12 +875,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   btnText: { color: '#FFFFFF', fontWeight: '900' },
+  userHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 10,
+  },
+  userTitle: { fontWeight: '800', color: '#111827' },
   slideRow: {
     flexDirection: 'row',
     alignItems: 'center',
     padding: 12,
     borderRadius: 10,
-    gap: 10,
   },
   rowLight: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB' },
   rowDark: { backgroundColor: '#111827', borderWidth: 1, borderColor: '#374151' },

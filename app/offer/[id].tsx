@@ -170,10 +170,29 @@ export default function OfferDetailsScreen() {
     ]
   ), [offer?.steps]);
 
-  const openStore = () => {
-    if (!offer) return;
+  // Normalize store URLs to reduce failures across platforms
+  const normalizeStoreUrl = (raw?: string): string | null => {
+    if (!raw) return null;
+    let url = String(raw).trim();
+    if (!url) return null;
+    // Already has http/https
+    if (/^https?:\/\//i.test(url)) return url;
+    // Android package ID (e.g., com.example.app)
+    if (/^[A-Za-z0-9_.]+$/.test(url) && url.includes('.')) {
+      return `https://play.google.com/store/apps/details?id=${url}`;
+    }
+    // market:// links -> convert to Play Store web URL
+    if (url.startsWith('market://')) {
+      return url.replace(/^market:\/\//i, 'https://play.google.com/');
+    }
+    // Fallback: prefix https
+    return `https://${url}`;
+  };
 
+  const openStore = async () => {
+    if (!offer) return;
     if (!user) { router.push('/(tabs)/profile'); return; }
+
     // Create or reuse a single active transaction per (user, offer)
     createOrReuseActiveTransaction({
       userId: user.id,
@@ -184,8 +203,22 @@ export default function OfferDetailsScreen() {
     }).catch((e: any) => {
       Alert.alert('Could not start task', e?.message || 'Failed to create transaction');
     });
-    if (offer.storeUrl) {
-      Linking.openURL(offer.storeUrl).catch(() => {});
+
+    const target = normalizeStoreUrl(offer.storeUrl);
+    if (!target) {
+      Alert.alert('Link unavailable', 'This offer does not have a valid store link yet. Please try again later.');
+      return;
+    }
+    try {
+      const supported = await Linking.canOpenURL(target);
+      if (supported) {
+        await Linking.openURL(target);
+      } else {
+        Alert.alert('Cannot open link', 'The app link seems invalid or unsupported on your device.');
+      }
+    } catch (e) {
+      // Swallow errors but notify user
+      Alert.alert('Failed to open', 'Something went wrong while opening the app store link.');
     }
   };
 
